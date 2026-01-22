@@ -1,4 +1,5 @@
 from __future__ import annotations
+from scipy.spatial.transform import Rotation as R
 
 from dataclasses import dataclass, field
 from datetime import timedelta
@@ -11,10 +12,10 @@ from .facing import FaceAtActionDescription
 from ..core import ParkArmsActionDescription, NavigateActionDescription, PickUpActionDescription, PlaceActionDescription, \
     PlaceAction
 from ....datastructures.dataclasses import FrozenObject
-from ....datastructures.enums import Arms, Grasp, VerticalAlignment
+from ....datastructures.enums import Arms, Grasp, VerticalAlignment, ApproachDirection, AxisIdentifier
 from ....datastructures.grasp import GraspDescription
 from ....datastructures.partial_designator import PartialDesignator
-from ....datastructures.pose import PoseStamped
+from ....datastructures.pose import PoseStamped, Vector3
 from ....designators.location_designator import ProbabilisticCostmapLocation, CostmapLocation
 from ....designators.object_designator import BelieveObject
 from ....failures import ObjectUnfetchable, ReachabilityFailure, ConfigurationNotReached
@@ -321,7 +322,7 @@ class MoveAndPickUpAction(ActionDescription):
 
 
 
-
+'''
 @has_parameters
 @dataclass
 class EfficientTransportAction(ActionDescription):
@@ -403,6 +404,179 @@ class EfficientTransportAction(ActionDescription):
         return PartialDesignator(cls,
                                  object_designator=object_designator,
                                  target_location=target_location)
+'''
+
+
+@has_parameters
+@dataclass
+class EfficientTransportAction(ActionDescription):
+    """
+    Transport an object by automatically choosing:
+    1. The closest arm (Left vs Right)
+    2. The best grasp approach (Front, Side, etc.) AND Vertical Alignment (Top, Bottom)
+    """
+    object_designator: Object
+    target_location: PoseStamped
+
+    grasp_description: Optional[GraspDescription] = None
+
+    def _choose_best_arm(self, robot: Object, obj: Object) -> Arms:
+        """
+        Intelligently choose the closest available arm.
+        """
+        rd = RobotDescription.current_robot_description
+        try:
+            try:
+                left_tool = rd.get_arm_chain(Arms.LEFT).get_tool_frame()
+                right_tool = rd.get_arm_chain(Arms.RIGHT).get_tool_frame()
+            except:
+                left_tool = "l_gripper_tool_frame"
+                right_tool = "r_gripper_tool_frame"
+
+            left_tip = robot.get_link_position(left_tool).to_numpy()
+            right_tip = robot.get_link_position(right_tool).to_numpy()
+
+        except Exception as e:
+            loginfo(f"Warning: Could not get arm positions, defaulting to RIGHT: {e}")
+            return Arms.RIGHT
+
+        obj_pos = np.array([obj.pose.position.x, obj.pose.position.y, obj.pose.position.z])
+
+        left_dist = np.linalg.norm(left_tip - obj_pos)
+        right_dist = np.linalg.norm(right_tip - obj_pos)
+
+        attached = robot._attached_objects.values() if hasattr(robot, '_attached_objects') else []
+        left_free = left_tool not in attached
+        right_free = right_tool not in attached
+
+        if left_free and (not right_free or left_dist <= right_dist):
+            return Arms.LEFT
+        elif right_free:
+            return Arms.RIGHT
+        else:
+            raise ConfigurationNotReached("No free arm available.")
+
+    def _calculate_closest_faces(self, vec_obj_frame: Vector3) -> tuple:
+        """
+        Helper method to calculate faces locally, avoiding dependency on updated grasp.py.
+        """
+        all_axes = [AxisIdentifier.X, AxisIdentifier.Y, AxisIdentifier.Z]
+        # Convert vector to list for indexing
+        vec_list = vec_obj_frame.to_list()
+
+        # Sort axes by magnitude (largest absolute value first)
+        sorted_axes = sorted(all_axes, key=lambda axis: abs(vec_list[axis.value.index(1)]), reverse=True)
+
+        primary_axis = sorted_axes[0]
+        # Get sign (+1 or -1)
+        primary_sign = int(np.sign(vec_list[primary_axis.value.index(1)]))
+
+        # Determine Primary Face (Vertical vs Approach)
+        primary_class = VerticalAlignment if primary_axis == AxisIdentifier.Z else ApproachDirection
+        primary_face = primary_class.from_axis_direction(primary_axis, primary_sign)
+
+        # Determine Secondary Face
+        if len(sorted_axes) > 1:
+            secondary_axis = sorted_axes[1]
+            secondary_sign = int(np.sign(vec_list[secondary_axis.value.index(1)]))
+        else:
+            secondary_axis = primary_axis
+            secondary_sign = -primary_sign
+
+        secondary_class = VerticalAlignment if secondary_axis == AxisIdentifier.Z else ApproachDirection
+        secondary_face = secondary_class.from_axis_direction(secondary_axis, secondary_sign)
+
+        return primary_face, secondary_face
+
+    def _choose_best_grasp(self, robot: Object, obj: Object) -> GraspDescription:
+        """
+        Automatically calculate BOTH Approach and Vertical Alignment.
+        """
+        # 1. Vector Math Setup
+        robot_pos = np.array(robot.pose.position.to_list())
+        obj_pos = np.array(obj.pose.position.to_list())
+
+        vec_world = robot_pos - obj_pos
+
+        # Handle object rotation
+        obj_orientation = obj.pose.orientation.to_list()
+        rotation = R.from_quat(obj_orientation)
+        vec_local = rotation.inv().apply(vec_world)
+        vec_local_obj = Vector3.from_list(vec_local.tolist())
+
+        # 2. Get the Two Best Faces (Using internal helper now!)
+        primary, secondary = self._calculate_closest_faces(vec_local_obj)
+
+        # 3. Smart Logic to Assign Roles
+        final_approach = ApproachDirection.FRONT
+        final_vertical = VerticalAlignment.TOP
+
+        # CASE A: The robot is mostly above/below the object (Primary is Vertical)
+        if isinstance(primary, VerticalAlignment):
+            final_vertical = primary
+            if isinstance(secondary, ApproachDirection):
+                final_approach = secondary
+
+        # CASE B: The robot is mostly to the side (Primary is Approach)
+        elif isinstance(primary, ApproachDirection):
+            final_approach = primary
+            if isinstance(secondary, VerticalAlignment):
+                final_vertical = secondary
+
+        loginfo(f"Auto-Grasp: Approach={final_approach.name}, Vertical={final_vertical.name}")
+
+        return GraspDescription(
+            approach_direction=final_approach,
+            vertical_alignment=final_vertical,
+            rotate_gripper=False
+        )
+
+    def plan(self) -> None:
+        robot = BelieveObject(names=[RobotDescription.current_robot_description.name]).resolve()
+        obj = self.object_designator
+
+        if not obj or not obj.pose:
+            raise ConfigurationNotReached(f"Cannot resolve object pose: {self.object_designator}")
+
+        # 1. Auto-Choose Arm
+        chosen_arm = self._choose_best_arm(robot, obj)
+
+        # 2. Auto-Choose Grasp (if not provided)
+        if self.grasp_description is None:
+            self.grasp_description = self._choose_best_grasp(robot, obj)
+
+        loginfo(f"Action: Transporting '{obj.name}' with {chosen_arm.name}")
+
+        ParkArmsActionDescription(Arms.BOTH).perform()
+
+        PickUpActionDescription(
+            object_designator=self.object_designator,
+            arm=chosen_arm,
+            grasp_description=self.grasp_description
+        ).perform()
+
+        ParkArmsActionDescription(Arms.BOTH).perform()
+
+        PlaceActionDescription(
+            object_designator=self.object_designator,
+            target_location=self.target_location,
+            arm=chosen_arm
+        ).perform()
+
+        ParkArmsActionDescription(Arms.BOTH).perform()
+
+    @classmethod
+    @with_plan
+    def description(cls,
+                    object_designator: Union[Iterable[Object], Object],
+                    target_location: Union[Iterable[PoseStamped], PoseStamped],
+                    grasp_description: Optional[GraspDescription] = None) -> \
+            PartialDesignator[Type['EfficientTransportAction']]:
+        return PartialDesignator(cls,
+                                 object_designator=object_designator,
+                                 target_location=target_location,
+                                 grasp_description=grasp_description)
+
 
 @has_parameters
 @dataclass
