@@ -1,0 +1,21 @@
+<?xml version="1.0"?>
+<robot name="block_object">
+    <material name="red">
+        <color rgba="1 0 0 1"/>
+    </material>
+	<link name="block">
+	    <collision>
+            <origin xyz="0 0 0"/>
+            <geometry>
+		   <box size="0.1 0.1 0.1"/>
+		    </geometry>
+        </collision>
+	    <visual>
+        <origin xyz="0 0 0"/>
+		<geometry>
+		   <box size="0.1 0.1 0.1"/>
+		</geometry>
+        </visual>
+
+	</link>
+</robot>
