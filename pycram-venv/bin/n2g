@@ -1,0 +1,7 @@
+#!/home/joy/workspace/ros/src/pycram/pycram-venv/bin/python
+import sys
+from N2G.utils.N2G_cli import cli_tool
+if __name__ == '__main__':
+    if sys.argv[0].endswith('.exe'):
+        sys.argv[0] = sys.argv[0][:-4]
+    sys.exit(cli_tool())

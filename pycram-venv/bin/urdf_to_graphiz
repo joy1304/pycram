@@ -1,0 +1,3 @@
+#!/home/joy/workspace/ros/src/pycram/pycram-venv/bin/python
+from cmeel.run import cmeel_run
+cmeel_run()
