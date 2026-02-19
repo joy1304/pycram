@@ -34,21 +34,9 @@ from pycram.world_concepts.world_object import Object
 from pycram.datastructures.world import World
 
 
-# =============================================================================
-# GRASP CLASSIFIER (Integrated with Scoring)
-# =============================================================================
-
 class GraspClassifier:
-    """Classifies and manages grasps from YAML data structure with intelligent scoring"""
 
     def __init__(self, grasp_data: Dict, robot=None):
-        """
-        Initialize with grasp data dictionary
-
-        Args:
-            grasp_data: Dictionary containing 'grasps' key with grasp definitions
-            robot: Optional robot instance for reachability validation
-        """
         self.grasp_data = grasp_data
         self.robot = robot
         self.classified_grasps = self._classify_grasps()
@@ -114,20 +102,12 @@ class GraspClassifier:
             return VerticalAlignment.BOTTOM
         return None
 
-    # =========================================================================
-    # SCORING FUNCTIONS
-    # =========================================================================
 
     def _calculate_distance_score(self, grasp: Dict, robot_pos: np.ndarray, obj_pos: np.ndarray) -> float:
         """
         Calculate score based on distance from robot to grasp position.
 
         Closer grasps get HIGHER scores.
-
-        Args:
-            grasp: Grasp dictionary with 'pose'
-            robot_pos: Robot position as numpy array [x, y, z]
-            obj_pos: Object position as numpy array [x, y, z]
 
         Returns:
             Score between 0 and 1 (higher = closer = better)
@@ -144,9 +124,6 @@ class GraspClassifier:
         # Calculate distance from robot to grasp point
         distance = np.linalg.norm(robot_pos - grasp_world_pos)
 
-        # Convert to score: closer = higher score
-        # Using inverse with offset to avoid division by zero
-        # Score ranges from ~0 (far) to ~1 (close)
         distance_score = 1.0 / (1.0 + distance)
 
         return distance_score
@@ -157,12 +134,6 @@ class GraspClassifier:
 
         Simpler orientations (less rotation) get HIGHER scores.
         Prefers grasps that are more "upright" and easier to execute.
-
-        Args:
-            grasp: Grasp dictionary with 'pose'
-
-        Returns:
-            Score between 0 and 1 (higher = simpler orientation = better)
         """
         grasp_pose = grasp['pose']
         quat = [
@@ -175,11 +146,8 @@ class GraspClassifier:
         # Simple orientation = quaternion close to identity [0, 0, 0, 1]
         # or close to simple rotations around Z axis
 
-        # Method: Penalize large x and y components (tilted grasps)
-        # x and y rotations make grasps harder to execute
         tilt_penalty = abs(quat[0]) + abs(quat[1])
 
-        # Score: less tilt = higher score
         # tilt_penalty ranges from 0 (no tilt) to ~2 (max tilt)
         orientation_score = 1.0 / (1.0 + tilt_penalty)
 
@@ -213,14 +181,6 @@ class GraspClassifier:
                       orientation_weight: float = 0.4) -> None:
         """
         Update all grasp scores based on robot and object positions.
-
-        Call this method before selecting grasps to get context-aware scoring.
-
-        Args:
-            robot_pos: Robot position as [x, y, z] or numpy array
-            obj_pos: Object position as [x, y, z] or numpy array
-            distance_weight: Weight for distance score (0-1)
-            orientation_weight: Weight for orientation score (0-1)
         """
         robot_pos = np.array(robot_pos)
         obj_pos = np.array(obj_pos)
@@ -235,22 +195,12 @@ class GraspClassifier:
                     distance_weight, orientation_weight
                 )
 
-    # =========================================================================
-    # GRASP SELECTION METHODS
-    # =========================================================================
 
     def get_best_grasp_for_direction(self,
                                       approach_direction: ApproachDirection,
                                       vertical_alignment: Optional[VerticalAlignment] = None) -> Optional[Dict]:
         """
         Get the best grasp for a given approach direction.
-
-        Args:
-            approach_direction: The desired approach direction
-            vertical_alignment: Optional vertical alignment filter
-
-        Returns:
-            Dictionary with grasp info or None
         """
         grasps = self.classified_grasps.get(approach_direction, [])
 
@@ -273,14 +223,6 @@ class GraspClassifier:
                                         vertical_alignment: Optional[VerticalAlignment] = None) -> List[Dict]:
         """
         Get top N grasps for a given approach direction, sorted by score.
-
-        Args:
-            approach_direction: The desired approach direction
-            n: Number of top grasps to return (default 5)
-            vertical_alignment: Optional vertical alignment filter
-
-        Returns:
-            List of top N grasp dictionaries sorted by score (highest first)
         """
         grasps = self.classified_grasps.get(approach_direction, [])
 
@@ -332,10 +274,7 @@ class GraspClassifier:
 
         print("\n" + "="*60)
 
-
-# =============================================================================
-# HELPER FUNCTIONS
-# =============================================================================
+#HELPER FUNCTION
 
 def load_grasp_data(yaml_path: str) -> Dict:
     """Load grasp data from YAML file"""
@@ -466,9 +405,7 @@ def find_free_position(original_target: PoseStamped,
     return original_target
 
 
-# =============================================================================
 # MAIN ACTION CLASS
-# =============================================================================
 
 @has_parameters
 @dataclass
@@ -654,7 +591,7 @@ class CollisionAwareTransportAction(ActionDescription):
 
         loginfo(f"Ideal grasp direction: Approach={ideal_approach.name}, Vertical={ideal_vertical.name if ideal_vertical else 'ANY'}")
 
-        # === LOG TOP 5 GRASPS FOR THE IDEAL DIRECTION ===
+        # LOG TOP 5 GRASPS FOR THE IDEAL DIRECTION
         top_5_for_direction = self.grasp_classifier.get_top_n_grasps_for_direction(ideal_approach, n=5)
         if top_5_for_direction:
             loginfo(f"Top 5 grasps for {ideal_approach.name} direction:")
@@ -703,7 +640,7 @@ class CollisionAwareTransportAction(ActionDescription):
         if not obj or not obj.pose:
             raise ConfigurationNotReached(f"Cannot resolve object pose: {self.object_designator}")
 
-        # === COLLISION DETECTION AND POSITION ADJUSTMENT ===
+        # COLLISION DETECTION AND POSITION ADJUSTMENT
         loginfo(f"Checking if target position is occupied...")
 
         self.actual_placement_location = find_free_position(
@@ -721,10 +658,10 @@ class CollisionAwareTransportAction(ActionDescription):
                    f"{self.actual_placement_location.position.y:.3f}, "
                    f"{self.actual_placement_location.position.z:.3f})")
 
-        # === ARM SELECTION ===
+        # ARM SELECTION
         chosen_arm = self._choose_best_arm(robot, obj)
 
-        # === GRASP SELECTION ===
+        # GRASP SELECTION
         if self.grasp_description is not None:
             # Use manually provided grasp
             loginfo(f"Using manually specified grasp: {self.grasp_description}")
@@ -737,7 +674,7 @@ class CollisionAwareTransportAction(ActionDescription):
 
         loginfo(f"Action: Transporting '{obj.name}' with {chosen_arm.name}")
 
-        # === EXECUTE TRANSPORT ===
+        # EXECUTE TRANSPORT
         ParkArmsActionDescription(Arms.BOTH).perform()
 
         PickUpActionDescription(
@@ -782,5 +719,4 @@ class CollisionAwareTransportAction(ActionDescription):
                                  orientation_weight=orientation_weight)
 
 
-# Convenience alias
 CollisionAwareTransportActionDescription = CollisionAwareTransportAction.description
